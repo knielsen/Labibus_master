@@ -49,7 +49,7 @@ clean:
 	rm -f $(OBJS) $(TARGET).elf $(TARGET).bin $(STARTUP).o
 
 tty:
-	stty -F/dev/ttyACM0 raw -echo -hup cs8 -parenb -cstopb 2400
+	stty -F/dev/ttyACM0 raw -echo -hup cs8 -parenb -cstopb 500000
 
 cat:
 	cat /dev/ttyACM0

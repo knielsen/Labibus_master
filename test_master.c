@@ -26,6 +26,22 @@
 
 
 static void
+serial_output_hexdig(uint32_t dig)
+{
+  ROM_UARTCharPut(UART0_BASE, (dig >= 10 ? 'A' - 10 + dig : '0' + dig));
+}
+
+
+__attribute__((unused))
+static void
+serial_output_hexbyte(uint8_t byte)
+{
+  serial_output_hexdig(byte >> 4);
+  serial_output_hexdig(byte & 0xf);
+}
+
+
+static void
 serial_output_str(const char *str)
 {
   char c;
@@ -80,6 +96,12 @@ send_to_slave(const char *s)
 {
   rs485_tx_mode();
 ROM_SysCtlDelay(300);
+  /*
+    Send a dummy byte of all one bits. This should ensure that the UART state
+    machine can sync up to the byte boundary, as it prevents any new start bit
+    being seen for one character's time.
+  */
+  ROM_UARTCharPut(UART1_BASE, 0xff);
   while (*s)
     ROM_UARTCharPut(UART1_BASE, *s++);
   while (ROM_UARTBusy(UART1_BASE))
@@ -102,6 +124,10 @@ ROM_SysCtlDelay(300);
   for (;;)
   {
     c = ROM_UARTCharGet(UART1_BASE);
+    /* Wait for start-of-frame. */
+    if (!i && c != '!')
+      continue;
+
     if (c == '\n')
       break;
     if (c == '\r' || c == '\0')
@@ -130,7 +156,7 @@ int main()
   ROM_GPIOPinConfigure(GPIO_PA0_U0RX);
   ROM_GPIOPinConfigure(GPIO_PA1_U0TX);
   ROM_GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-  ROM_UARTConfigSetExpClk(UART0_BASE, (ROM_SysCtlClockGet()), 2400,
+  ROM_UARTConfigSetExpClk(UART0_BASE, (ROM_SysCtlClockGet()), 500000,
                           (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE |
                            UART_CONFIG_PAR_NONE));
 
@@ -158,7 +184,7 @@ int main()
 
     led_on();
     serial_output_str("Sending 'hello' to slave...\r\n");
-    send_to_slave("bullu\r\n");
+    send_to_slave("?hello\r\n");
     led_off();
     receive_from_slave(buf, sizeof(buf));
     serial_output_str("Got from slave: '");
