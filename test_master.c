@@ -7,10 +7,13 @@
 #include "inc/hw_sysctl.h"
 #include "inc/hw_types.h"
 #include "inc/hw_uart.h"
+#include "inc/hw_timer.h"
 #include "driverlib/gpio.h"
 #include "driverlib/rom.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/uart.h"
+#include "driverlib/timer.h"
+
 
 /*
   Pinout:
@@ -22,12 +25,48 @@
 */
 
 
-#define MAX_REQ 100
+#define MAX_DESCRIPTION 140
+#define MAX_UNIT 20
+#define MAX_REQ (20+MAX_DESCRIPTION+MAX_UNIT)
 
+#define MAX_DEVICE 128
 
 /* To change this, must fix clock setup in the code. */
 #define MCU_HZ 80000000
 
+
+#if MAX_REQ > 255
+#error MAX_REQ larger than 255, does not fit in uint8_t
+#endif
+
+
+/*
+  Number of times a device is allowed to fail to respond to a poll or
+  discover request, before being considered inactive.
+*/
+#define MAX_FAIL_RESPOND 10
+
+struct devdata {
+  /* Time of last poll, or 0 if never polled yet. */
+  uint64_t last_poll_time;
+  /* Poll interval, in seconds. */
+  uint16_t poll_interval;
+  /*
+    Active flag. Zero for a non-active device. Non-zero for an active device;
+    then the value is the number of times the device is allowed to fail to
+    respond to poll or discover before being considered inactive.
+  */
+  uint8_t active_count;
+  /* Description, stored in quoted format (\xx). */
+  uint8_t description[MAX_DESCRIPTION+1];
+  /* Unit, stored in quoted format. */
+  uint8_t unit[MAX_UNIT+1];
+};
+
+
+static struct devdata devices[MAX_DEVICE];
+/* Index of next device to attempt discovery for. */
+static uint32_t discover_idx = 0;
 
 /* CRC-16. */
 static const uint16_t crc16_tab[256] = {
@@ -135,6 +174,43 @@ serial_output_str(const char *str)
 }
 
 
+__attribute__ ((unused))
+static char *
+uint32_tostring(char *buf, uint32_t val)
+{
+  char *p = buf;
+  uint32_t l, d;
+
+  l = 1000000000UL;
+  while (l > val && l > 1)
+    l /= 10;
+
+  do
+  {
+    d = val / l;
+    *p++ = '0' + d;
+    val -= d*l;
+    l /= 10;
+  } while (l > 0);
+
+  *p = '\0';
+  return p;
+}
+
+
+ __attribute__ ((unused))
+static void
+println_uint32(uint32_t val)
+{
+  char buf[13];
+  char *p = uint32_tostring(buf, val);
+  *p++ = '\r';
+  *p++ = '\n';
+  *p = '\0';
+  serial_output_str(buf);
+}
+
+
 static void
 config_led(void)
 {
@@ -156,6 +232,25 @@ static void
 led_off(void)
 {
   ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
+}
+
+
+static void
+setup_timer(void)
+{
+  ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_WTIMER0);
+  ROM_TimerConfigure(WTIMER0_BASE, TIMER_CFG_PERIODIC_UP);
+  ROM_TimerLoadSet64(WTIMER0_BASE, ~(uint64_t)0);
+  ROM_TimerEnable(WTIMER0_BASE, TIMER_A);
+}
+
+
+static uint64_t
+current_time(void)
+{
+  uint64_t v = ROM_TimerValueGet64(WTIMER0_BASE);
+  /* Return time in milliseconds. */
+  return v / (MCU_HZ / 1000);
 }
 
 
@@ -251,6 +346,50 @@ ROM_SysCtlDelay(300);
 }
 
 
+static uint32_t
+check_poll(uint32_t dev)
+{
+  struct devdata *p = &devices[dev];
+
+  if (!p->active_count)
+    return 0;
+  if (!p->last_poll_time ||
+      p->last_poll_time + 1000*p->poll_interval <= current_time())
+    return 1;
+  return 0;
+}
+
+
+static void
+poll_n_discover_loop(void)
+{
+  for (;;)
+  {
+    uint32_t dev;
+
+    /* First, poll any device that has reached its next poll interval. */
+    for (dev = 0; dev < MAX_DEVICE; ++dev)
+    {
+      if (check_poll(dev))
+        do_poll(dev);
+    }
+    /*
+      Next, send a discover request for the next device id in line.
+      We send discover requests to all devices, active and non-active alike.
+      This way, we will catch updated description/unit strings, even if the
+      device manages to update quickly enough to not miss enough polls to be
+      marked as non-active.
+    */
+    dev = discover_idx;
+    do_discover(dev);
+    ++dev;
+    if (dev >= MAX_DEVICE)
+      dev = 0;
+    discover_idx = dev;
+  }
+  /* NOTREACHED */
+}
+
 
 int main()
 {
@@ -284,12 +423,16 @@ int main()
 
   config_led();
 
+  setup_timer();
+
   ROM_SysCtlDelay(50000000);
   serial_output_str("Master initialised.\n");
 
   for (;;)
   {
     char buf[MAX_REQ];
+
+    println_uint32(current_time());
 
     led_on();
     serial_output_str("Sending discover...\r\n");
