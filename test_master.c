@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "inc/hw_gpio.h"
 #include "inc/hw_memmap.h"
@@ -19,6 +20,9 @@
   RE  PD2
   RO  PB0
 */
+
+
+#define MAX_REQ 100
 
 
 /* To change this, must fix clock setup in the code. */
@@ -78,6 +82,30 @@ static uint32_t crc16_buf(const uint8_t *buf, uint32_t len)
     --len;
   }
   return crc_val;
+}
+
+
+static uint32_t
+hex2dec(uint32_t c)
+{
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  else if (c >= 'A' && c <= 'F')
+    return c - ('A'-10);
+  else if (c >= 'a' && c <= 'f')
+    return c - ('a'-10);
+  else
+    return 0;
+}
+
+
+static uint32_t
+dec2hex(uint32_t x)
+{
+  if (x <= 9)
+    return x + '0';
+  else
+    return x + ('a' - 10);
 }
 
 
@@ -150,6 +178,9 @@ rs485_rx_mode(void)
 static void
 send_to_slave(const char *s)
 {
+  uint32_t crc;
+  uint32_t c;
+
   rs485_tx_mode();
 ROM_SysCtlDelay(300);
   /*
@@ -158,8 +189,30 @@ ROM_SysCtlDelay(300);
     being seen for one character's time.
   */
   ROM_UARTCharPut(UART1_BASE, 0xff);
-  while (*s)
-    ROM_UARTCharPut(UART1_BASE, *s++);
+  crc = 0;
+  while ((c = *s++))
+  {
+    crc = crc16(c, crc);
+#if TODO_FIX_QUOTING
+    if (c < ' ' || c >= 127 || c == '!' || c == '?' || c == '|' || c == '\\' ||
+        c == ':')
+    {
+      /* Handle escaping. */
+      ROM_UARTCharPut(UART1_BASE, '\\');
+      ROM_UARTCharPut(UART1_BASE, dec2hex(c >> 4));
+      ROM_UARTCharPut(UART1_BASE, dec2hex(c & 0xf));
+    }
+    else
+#endif
+      ROM_UARTCharPut(UART1_BASE, c);
+  }
+  /* Send the CRC and the end marker. */
+  ROM_UARTCharPut(UART1_BASE, dec2hex(crc >> 12));
+  ROM_UARTCharPut(UART1_BASE, dec2hex((crc >> 8) & 0xf));
+  ROM_UARTCharPut(UART1_BASE, dec2hex((crc >> 4) & 0xf));
+  ROM_UARTCharPut(UART1_BASE, dec2hex(crc & 0xf));
+  ROM_UARTCharPut(UART1_BASE, '\r');
+  ROM_UARTCharPut(UART1_BASE, '\n');
   while (ROM_UARTBusy(UART1_BASE))
     ;
 ROM_SysCtlDelay(300);
@@ -236,11 +289,20 @@ int main()
 
   for (;;)
   {
-    char buf[100];
+    char buf[MAX_REQ];
 
     led_on();
-    serial_output_str("Sending 'hello' to slave...\r\n");
-    send_to_slave("?hello\r\n");
+    serial_output_str("Sending discover...\r\n");
+    send_to_slave("?09:D|");
+    led_off();
+    receive_from_slave(buf, sizeof(buf));
+    serial_output_str("Got from slave: '");
+    serial_output_str(buf);
+    serial_output_str("'\r\n");
+
+    led_on();
+    serial_output_str("Sending poll...\r\n");
+    send_to_slave("?09:P|");
     led_off();
     receive_from_slave(buf, sizeof(buf));
     serial_output_str("Got from slave: '");
