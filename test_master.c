@@ -1,6 +1,7 @@
 #include <inttypes.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "inc/hw_gpio.h"
 #include "inc/hw_memmap.h"
@@ -419,6 +420,184 @@ check_poll(uint32_t dev)
       p->last_poll_time + 1000*p->poll_interval <= current_time())
     return 1;
   return 0;
+}
+
+
+static void
+device_not_responding (uint32_t dev)
+{
+  if (devices[dev].active_count > 0)
+  {
+    --devices[dev].active_count;
+    if (devices[dev].active_count == 0)
+    {
+      devices[dev].last_poll_time = 0;
+      devices[dev].poll_interval = 0;
+      strcpy((char *)devices[dev].description, "");
+      strcpy((char *)devices[dev].unit, "");
+    }
+  }
+}
+
+
+static void
+do_discover(uint32_t dev)
+{
+  char buf[MAX_REQ];
+  uint32_t rcv_len;
+  char *p, *q, *descr_start, *unit_start, *crc_start;
+  uint32_t descr_len, unit_len;
+  uint32_t calc_crc, rcv_crc;
+  uint32_t poll_interval;
+
+  sprintf(buf, "?%02x:D|", (unsigned)(dev & 0x7f));
+
+  led_on();
+  serial_output_str("Sending discover to ");
+  println_uint32(dev);
+  send_to_slave(buf);
+  led_off();
+  rcv_len = receive_from_slave(buf, sizeof(buf));
+
+  if (!rcv_len)
+  {
+    serial_output_str("Timeout!\r\n");
+    goto badresponse;
+  }
+
+  serial_output_str("Got from slave: '");
+  serial_output_str(buf);
+  serial_output_str("'\r\n");
+
+  if (buf[0] != '!' ||
+      buf[3] != ':' ||
+      buf[4] != 'D')
+    goto badresponse;
+
+  if ( ((hex2dec(buf[1]) << 4) | hex2dec(buf[2])) != dev)
+    goto badresponse;
+
+  p = &buf[5];
+  poll_interval = strtoul(p, &q, 10);
+  if (q <= p)
+    goto badresponse;
+  if (*q != '|')
+    goto badresponse;
+  descr_start = q+1;
+  for (p = descr_start; p < buf + rcv_len && *p != '|'; ++p)
+    ;
+  if (p >= buf + rcv_len)
+    goto badresponse;
+  descr_len = p - descr_start;
+  if (descr_len > MAX_DESCRIPTION)
+    goto badresponse;
+
+  unit_start = p+1;
+  for (p = unit_start; p < buf + rcv_len && *p != '|'; ++p)
+    ;
+  if (p >= buf + rcv_len)
+    goto badresponse;
+  unit_len = p - descr_start;
+  if (unit_len > MAX_DESCRIPTION)
+    goto badresponse;
+
+  crc_start = p+1;
+  calc_crc = crc16_buf((uint8_t *)buf, crc_start-buf);
+  rcv_crc = (hex2dec(crc_start[0]) << 12) |
+    (hex2dec(crc_start[1]) << 8) |
+    (hex2dec(crc_start[2]) << 4) |
+    hex2dec(crc_start[3]);
+  if (calc_crc != rcv_crc)
+  {
+    serial_output_str("CRC mismatch\r\n");
+    goto badresponse;
+  }
+
+  /* Ok, device responded to discover request. Save its data. */
+  if (!devices[dev].active_count)
+    devices[dev].last_poll_time = 0;
+  devices[dev].active_count = MAX_FAIL_RESPOND;
+  devices[dev].poll_interval = poll_interval;
+  memcpy(devices[dev].description, descr_start, descr_len);
+  devices[dev].description[descr_len] = '\0';
+  memcpy(devices[dev].unit, unit_start, unit_len);
+  devices[dev].description[unit_len] = '\0';
+  /* ToDo: Notify server of changes... */
+  return;
+
+badresponse:
+  device_not_responding(dev);
+}
+
+
+static void
+do_poll(uint32_t dev)
+{
+  char buf[MAX_REQ];
+  uint32_t rcv_len;
+  char *p, *q, *val_start, *crc_start;
+  uint32_t calc_crc, rcv_crc;
+
+  sprintf(buf, "?%02x:P|", (unsigned)(dev & 0x7f));
+
+  led_on();
+  serial_output_str("Sending poll to ");
+  println_uint32(dev);
+  send_to_slave(buf);
+  led_off();
+  rcv_len = receive_from_slave(buf, sizeof(buf));
+
+  if (!rcv_len)
+  {
+    serial_output_str("Timeout!\r\n");
+    goto badresponse;
+  }
+
+  serial_output_str("Got from slave: '");
+  serial_output_str(buf);
+  serial_output_str("'\r\n");
+
+  if (buf[0] != '!' ||
+      buf[3] != ':' ||
+      buf[4] != 'P')
+    goto badresponse;
+
+  if ( ((hex2dec(buf[1]) << 4) | hex2dec(buf[2])) != dev)
+    goto badresponse;
+
+  val_start = &buf[5];
+  for (p = val_start; p < buf + rcv_len && *p != '|'; ++p)
+    ;
+  if (p >= buf + rcv_len)
+    goto badresponse;
+  *p = '\0';
+  strtof(val_start, &q);
+  if (q != p)
+    goto badresponse;
+
+  crc_start = p+1;
+  calc_crc = crc16_buf((uint8_t *)buf, crc_start-buf);
+  rcv_crc = (hex2dec(crc_start[0]) << 12) |
+    (hex2dec(crc_start[1]) << 8) |
+    (hex2dec(crc_start[2]) << 4) |
+    hex2dec(crc_start[3]);
+  if (calc_crc != rcv_crc)
+  {
+    serial_output_str("CRC mismatch\r\n");
+    goto badresponse;
+  }
+
+  /* Ok, device responded to discover request. */
+  devices[dev].active_count = MAX_FAIL_RESPOND;
+  devices[dev].last_poll_time = current_time();
+  serial_output_str("Value from device: ");
+  serial_output_str(val_start);
+  serial_output_str("\r\n");
+
+  return;
+
+badresponse:
+  device_not_responding(dev);
 }
 
 
