@@ -89,6 +89,14 @@ static struct devdata devices[MAX_DEVICE];
 /* Index of next device to attempt discovery for. */
 static uint32_t discover_idx = 0;
 
+
+/*
+  Seems we get an undefined reference to this if using sprintf().
+  It doesn't seem to be actually used, just define a dummy one.
+*/
+void *_sbrk(uint32_t dummy) { for (;;) { } }
+
+
 /* CRC-16. */
 static const uint16_t crc16_tab[256] = {
   0x0000, 0xc0c1, 0xc181, 0x0140, 0xc301, 0x03c0, 0x0280, 0xc241,
@@ -453,17 +461,12 @@ do_discover(uint32_t dev)
   sprintf(buf, "?%02x:D|", (unsigned)(dev & 0x7f));
 
   led_on();
-  serial_output_str("Sending discover to ");
-  println_uint32(dev);
   send_to_slave(buf);
   led_off();
   rcv_len = receive_from_slave(buf, sizeof(buf));
 
   if (!rcv_len)
-  {
-    serial_output_str("Timeout!\r\n");
     goto badresponse;
-  }
 
   serial_output_str("Got from slave: '");
   serial_output_str(buf);
@@ -502,6 +505,8 @@ do_discover(uint32_t dev)
     goto badresponse;
 
   crc_start = p+1;
+  if (crc_start - buf + 4 != rcv_len)
+    goto badresponse;
   calc_crc = crc16_buf((uint8_t *)buf, crc_start-buf);
   rcv_crc = (hex2dec(crc_start[0]) << 12) |
     (hex2dec(crc_start[1]) << 8) |
@@ -538,18 +543,18 @@ do_poll(uint32_t dev)
   char *p, *q, *val_start, *crc_start;
   uint32_t calc_crc, rcv_crc;
 
+  devices[dev].last_poll_time = current_time();
+
   sprintf(buf, "?%02x:P|", (unsigned)(dev & 0x7f));
 
   led_on();
-  serial_output_str("Sending poll to ");
-  println_uint32(dev);
   send_to_slave(buf);
   led_off();
   rcv_len = receive_from_slave(buf, sizeof(buf));
 
   if (!rcv_len)
   {
-    serial_output_str("Timeout!\r\n");
+    serial_output_str("Timeout from poll!\r\n");
     goto badresponse;
   }
 
@@ -570,12 +575,9 @@ do_poll(uint32_t dev)
     ;
   if (p >= buf + rcv_len)
     goto badresponse;
-  *p = '\0';
-  strtof(val_start, &q);
-  if (q != p)
-    goto badresponse;
-
   crc_start = p+1;
+  if (crc_start - buf + 4 != rcv_len)
+    goto badresponse;
   calc_crc = crc16_buf((uint8_t *)buf, crc_start-buf);
   rcv_crc = (hex2dec(crc_start[0]) << 12) |
     (hex2dec(crc_start[1]) << 8) |
@@ -587,9 +589,14 @@ do_poll(uint32_t dev)
     goto badresponse;
   }
 
+  /* Also check for a valid floating-point format for the value. */
+  *p = '\0';
+  strtof(val_start, &q);
+  if (q != p)
+    goto badresponse;
+
   /* Ok, device responded to discover request. */
   devices[dev].active_count = MAX_FAIL_RESPOND;
-  devices[dev].last_poll_time = current_time();
   serial_output_str("Value from device: ");
   serial_output_str(val_start);
   serial_output_str("\r\n");
@@ -668,6 +675,8 @@ int main()
 
   ROM_SysCtlDelay(50000000);
   serial_output_str("Master initialised.\n");
+
+  poll_n_discover_loop();
 
   for (;;)
   {

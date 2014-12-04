@@ -5,7 +5,7 @@ SWDIR=/home/knielsen/devel/study/stellaris-arm/SW-EK-LM4F120XL-9453
 
 BINDIR=$(GCCDIR)/bin
 CC=arm-none-eabi-gcc
-LD=arm-none-eabi-ld
+LD=arm-none-eabi-gcc
 OBJCOPY=arm-none-eabi-objcopy
 LM4FLASH=lm4flash
 
@@ -17,7 +17,7 @@ FP_LDFLAGS= -L$(GCCDIR)/arm-none-eabi/lib/thumb/cortex-m4 -lm -L$(GCCDIR)/lib/gc
 ARCH_CFLAGS=-mthumb -mcpu=cortex-m4 -ffunction-sections -fdata-sections -DTARGET_IS_BLIZZARD_RA1
 INC=-I$(SWDIR) -DPART_LM4F120H5QR
 CFLAGS=-Dgcc -g -O3  -std=c99 -Wall -pedantic $(ARCH_CFLAGS) $(INC)
-LDFLAGS=--entry ResetISR --gc-sections
+LDFLAGS=--entry ResetISR -Wl,--gc-sections
 
 VPATH=$(SWDIR)/boards/ek-lm4f120xl/drivers
 VPATH+=$(SWDIR)/utils
