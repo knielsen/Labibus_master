@@ -31,6 +31,26 @@
 
 #define MAX_DEVICE 128
 
+
+/*
+  Timeouts. When waiting for a response from a slave, we have two timeouts
+  that will be taken as slave not present or not responding.
+
+  TIMEOUT_CHAR is the maximum time without receiving any new bytes; this
+  should quickly flag a non-present device so we can move on to try a
+  discover request on the next device id.
+
+  TIMEOUT_RESPONSE is to avoid an infinite loop if we somehow continue to
+  receive bytes without ever seeing a response end (\n) - though if we do,
+  it would seem to indicate an errant device that is likely to disturb any
+  further communication attempts also.
+
+  The timeouts are in milliseconds.
+*/
+#define TIMEOUT_RESPONSE 2000   /* ToDo: reduce for higher baud rate. */
+#define TIMEOUT_CHAR 10
+
+
 /* To change this, must fix clock setup in the code. */
 #define MCU_HZ 80000000
 
@@ -255,6 +275,16 @@ current_time(void)
 
 
 static void
+delay_milliseconds(uint32_t ms)
+{
+  uint64_t target_clocks = ROM_TimerValueGet64(WTIMER0_BASE) +
+    (uint64_t)ms * (MCU_HZ / 1000);
+  while (ROM_TimerValueGet64(WTIMER0_BASE) < target_clocks)
+    ;
+}
+
+
+static void
 rs485_tx_mode(void)
 {
   ROM_GPIOPinWrite(GPIO_PORTD_BASE, GPIO_PIN_2, GPIO_PIN_2);
@@ -315,11 +345,26 @@ ROM_SysCtlDelay(300);
 }
 
 
-static void
+/*
+  Try to receive a reply from a slave.
+
+  Returns the number of bytes received. Returns 0 in case of timeout.
+*/
+static uint32_t
 receive_from_slave(char *buf, uint32_t size)
 {
   uint32_t i;
   uint32_t c;
+  uint64_t start_time, last_char_time, now_time;
+
+  start_time = last_char_time = current_time();
+
+  /*
+    Drain any existing junk in the UART FIFO before switching to receive mode
+    on the RS485 line.
+  */
+  while (ROM_UARTCharsAvail(UART1_BASE))
+    (void)ROM_UARTCharGet(UART1_BASE);
 
 ROM_SysCtlDelay(300);
   rs485_rx_mode();
@@ -327,6 +372,17 @@ ROM_SysCtlDelay(300);
   i = 0;
   for (;;)
   {
+    /* Wait for a char to arrive, or for timeout. */
+    for (;;)
+    {
+      now_time = current_time();
+      if (ROM_UARTCharsAvail(UART1_BASE))
+        break;
+      if (now_time - last_char_time >= TIMEOUT_CHAR ||
+          now_time - start_time >= TIMEOUT_RESPONSE)
+        return 0;
+    }
+    last_char_time = now_time;
     c = ROM_UARTCharGet(UART1_BASE);
     /* Wait for start-of-frame. */
     if (!i && c != '!')
@@ -342,7 +398,13 @@ ROM_SysCtlDelay(300);
   }
   buf[i] = 0;
 
-  ROM_SysCtlDelay((MCU_HZ/(3*1000))*2);
+  /*
+    Give the slave device 2 milliseconds to release transmit mode on the RS485
+    line.
+  */
+  delay_milliseconds(2);
+
+  return i;
 }
 
 
@@ -433,23 +495,32 @@ int main()
     char buf[MAX_REQ];
 
     println_uint32(current_time());
+delay_milliseconds(1000);
 
     led_on();
     serial_output_str("Sending discover...\r\n");
     send_to_slave("?09:D|");
     led_off();
-    receive_from_slave(buf, sizeof(buf));
-    serial_output_str("Got from slave: '");
-    serial_output_str(buf);
-    serial_output_str("'\r\n");
+    if (receive_from_slave(buf, sizeof(buf)))
+    {
+      serial_output_str("Got from slave: '");
+      serial_output_str(buf);
+      serial_output_str("'\r\n");
+    }
+    else
+      serial_output_str("Timeout!\r\n");
 
     led_on();
     serial_output_str("Sending poll...\r\n");
     send_to_slave("?09:P|");
     led_off();
-    receive_from_slave(buf, sizeof(buf));
-    serial_output_str("Got from slave: '");
-    serial_output_str(buf);
-    serial_output_str("'\r\n");
+    if (receive_from_slave(buf, sizeof(buf)))
+    {
+      serial_output_str("Got from slave: '");
+      serial_output_str(buf);
+      serial_output_str("'\r\n");
+    }
+    else
+      serial_output_str("Timeout!\r\n");
   }
 }
