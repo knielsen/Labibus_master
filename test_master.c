@@ -310,6 +310,36 @@ rs485_rx_mode(void)
 
 
 static void
+device_active(uint32_t dev)
+{
+  char buf[MAX_REQ + 50];
+  snprintf(buf, sizeof(buf)-1, "ACTIVE %u|%u|%s|%s\n", (unsigned)dev,
+           (unsigned)devices[dev].poll_interval, devices[dev].description,
+           devices[dev].unit);
+  serial_output_str(buf);
+}
+
+
+static void
+device_inactive(uint32_t dev)
+{
+  char buf[50];
+  snprintf(buf, sizeof(buf)-1, "INACTIVE %u\n", (unsigned)dev);
+  serial_output_str(buf);
+}
+
+
+static void
+device_poll_result(uint32_t dev, const char *val_str)
+{
+  char buf[50];
+  snprintf(buf, sizeof(buf)-1, "POLL %u %s\n", (unsigned)dev, val_str);
+  serial_output_str(buf);
+}
+
+
+
+static void
 send_to_slave(const char *s)
 {
   uint32_t crc;
@@ -432,7 +462,7 @@ check_poll(uint32_t dev)
 
 
 static void
-device_not_responding (uint32_t dev)
+device_not_responding (uint32_t dev, uint32_t force_report)
 {
   if (devices[dev].active_count > 0)
   {
@@ -443,13 +473,16 @@ device_not_responding (uint32_t dev)
       devices[dev].poll_interval = 0;
       strcpy((char *)devices[dev].description, "");
       strcpy((char *)devices[dev].unit, "");
+      device_inactive(dev);
     }
   }
+  else if (force_report)
+    device_inactive(dev);
 }
 
 
 static void
-do_discover(uint32_t dev)
+do_discover(uint32_t dev, uint32_t force_report)
 {
   char buf[MAX_REQ];
   uint32_t rcv_len;
@@ -467,10 +500,6 @@ do_discover(uint32_t dev)
 
   if (!rcv_len)
     goto badresponse;
-
-  serial_output_str("Got from slave: '");
-  serial_output_str(buf);
-  serial_output_str("'\r\n");
 
   if (buf[0] != '!' ||
       buf[3] != ':' ||
@@ -500,7 +529,7 @@ do_discover(uint32_t dev)
     ;
   if (p >= buf + rcv_len)
     goto badresponse;
-  unit_len = p - descr_start;
+  unit_len = p - unit_start;
   if (unit_len > MAX_DESCRIPTION)
     goto badresponse;
 
@@ -514,7 +543,8 @@ do_discover(uint32_t dev)
     hex2dec(crc_start[3]);
   if (calc_crc != rcv_crc)
   {
-    serial_output_str("CRC mismatch\r\n");
+    serial_output_str("CRC mismatch on device ");
+    println_uint32(dev);
     goto badresponse;
   }
 
@@ -522,16 +552,27 @@ do_discover(uint32_t dev)
   if (!devices[dev].active_count)
     devices[dev].last_poll_time = 0;
   devices[dev].active_count = MAX_FAIL_RESPOND;
+  if (poll_interval != devices[dev].poll_interval)
+    force_report = 1;
   devices[dev].poll_interval = poll_interval;
+  if (memcmp(devices[dev].description, descr_start, descr_len) ||
+      devices[dev].description[descr_len] != '\0')
+    force_report = 1;
   memcpy(devices[dev].description, descr_start, descr_len);
   devices[dev].description[descr_len] = '\0';
+  if (memcmp(devices[dev].unit, unit_start, unit_len) ||
+      devices[dev].unit[unit_len] != '\0')
+    force_report = 1;
   memcpy(devices[dev].unit, unit_start, unit_len);
-  devices[dev].description[unit_len] = '\0';
-  /* ToDo: Notify server of changes... */
+  devices[dev].unit[unit_len] = '\0';
+
+  if (force_report)
+    device_active(dev);
+
   return;
 
 badresponse:
-  device_not_responding(dev);
+  device_not_responding(dev, force_report);
 }
 
 
@@ -554,13 +595,10 @@ do_poll(uint32_t dev)
 
   if (!rcv_len)
   {
-    serial_output_str("Timeout from poll!\r\n");
+    serial_output_str("Timeout from poll on device ");
+    println_uint32(dev);
     goto badresponse;
   }
-
-  serial_output_str("Got from slave: '");
-  serial_output_str(buf);
-  serial_output_str("'\r\n");
 
   if (buf[0] != '!' ||
       buf[3] != ':' ||
@@ -585,7 +623,8 @@ do_poll(uint32_t dev)
     hex2dec(crc_start[3]);
   if (calc_crc != rcv_crc)
   {
-    serial_output_str("CRC mismatch\r\n");
+    serial_output_str("CRC mismatch on device ");
+    println_uint32(dev);
     goto badresponse;
   }
 
@@ -597,20 +636,22 @@ do_poll(uint32_t dev)
 
   /* Ok, device responded to discover request. */
   devices[dev].active_count = MAX_FAIL_RESPOND;
-  serial_output_str("Value from device: ");
-  serial_output_str(val_start);
-  serial_output_str("\r\n");
+  device_poll_result(dev, val_start);
 
   return;
 
 badresponse:
-  device_not_responding(dev);
+  device_not_responding(dev, 0);
 }
 
+
+static uint64_t next_full_report_time = 0;
 
 static void
 poll_n_discover_loop(void)
 {
+  uint32_t do_full_report = 1;
+
   for (;;)
   {
     uint32_t dev;
@@ -629,11 +670,35 @@ poll_n_discover_loop(void)
       marked as non-active.
     */
     dev = discover_idx;
-    do_discover(dev);
+    do_discover(dev, do_full_report);
     ++dev;
     if (dev >= MAX_DEVICE)
+    {
       dev = 0;
+      if (do_full_report)
+      {
+        /*
+          We will send a full report periodically, even if nothing changes.
+          This should help avoid us somehow being out of sync for long.
+        */
+        next_full_report_time = current_time() + 5*60*1000;
+        do_full_report = 0;
+      }
+      else if (current_time() >= next_full_report_time)
+        do_full_report = 1;
+    }
     discover_idx = dev;
+
+    /* Server can send us a line to request full activity dump. */
+    if (ROM_UARTCharsAvail(UART0_BASE))
+    {
+      do
+      {
+        uint8_t c = ROM_UARTCharGet(UART0_BASE);
+        if (c == '\n')
+          next_full_report_time = current_time();
+      } while (ROM_UARTCharsAvail(UART0_BASE));
+    }
   }
   /* NOTREACHED */
 }
@@ -677,38 +742,4 @@ int main()
   serial_output_str("Master initialised.\n");
 
   poll_n_discover_loop();
-
-  for (;;)
-  {
-    char buf[MAX_REQ];
-
-    println_uint32(current_time());
-delay_milliseconds(1000);
-
-    led_on();
-    serial_output_str("Sending discover...\r\n");
-    send_to_slave("?09:D|");
-    led_off();
-    if (receive_from_slave(buf, sizeof(buf)))
-    {
-      serial_output_str("Got from slave: '");
-      serial_output_str(buf);
-      serial_output_str("'\r\n");
-    }
-    else
-      serial_output_str("Timeout!\r\n");
-
-    led_on();
-    serial_output_str("Sending poll...\r\n");
-    send_to_slave("?09:P|");
-    led_off();
-    if (receive_from_slave(buf, sizeof(buf)))
-    {
-      serial_output_str("Got from slave: '");
-      serial_output_str(buf);
-      serial_output_str("'\r\n");
-    }
-    else
-      serial_output_str("Timeout!\r\n");
-  }
 }
