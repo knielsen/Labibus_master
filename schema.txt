@@ -1,0 +1,150 @@
+Database schema for Labibus
+
+History table. This holds the history for which devices where active when, and
+their description etc.
+
+CREATE TABLE device_history (
+  id INTEGER NOT NULL,
+  stamp TIMESTAMP NOT NULL,
+  active BOOLEAN NOT NULL,
+  description VARCHAR(140),
+  unit VARCHAR(20),
+  poll_interval INTEGER,
+  PRIMARY KEY (id, stamp)
+);
+
+
+Then a view to simplify getting the current status. It simply selects the
+newest status for each device:
+
+CREATE VIEW device_status AS
+SELECT id, stamp, active, description, unit, poll_interval
+  FROM (SELECT id AS max_id, MAX(stamp) AS max_stamp
+          FROM device_history AS dh1
+         GROUP BY id) find_newest
+ INNER JOIN device_history AS dh2
+    ON (max_id = id AND max_stamp = stamp);
+
+
+A slightly more complex view. It selects the last active status for each
+device, along with whether the device is currently active. This allows to see
+description and so on for devices that were active previously, but are
+currently (perhaps temporarily) inactive.
+
+CREATE VIEW device_last_active_status AS
+SELECT max_active_id, active_history.stamp, newest_history.active, active_history.description, active_history.unit, active_history.poll_interval
+  FROM (SELECT id AS max_active_id, MAX(stamp) AS max_active_stamp
+          FROM device_history AS dh1
+         WHERE active = TRUE
+         GROUP BY id) newest_active
+ INNER JOIN device_history AS active_history
+    ON (max_active_id = active_history.id
+    AND max_active_stamp = active_history.stamp)
+ INNER JOIN device_history AS newest_history
+    ON (newest_history.id = max_active_id
+    AND newest_history.stamp = (SELECT MAX(stamp)
+                                  FROM device_history AS dh3
+                                 WHERE dh3.id = max_active_id));
+
+
+This is the main table that contains all logged data:
+
+CREATE TABLE device_log (
+  id INTEGER NOT NULL,
+  stamp TIMESTAMP NOT NULL,
+  value FLOAT(24) NOT NULL,
+  PRIMARY KEY (id, stamp));
+
+
+This view allows to see logged data, along with the device description
+etc. that was current at the time of each log entry (this allows to see
+correct descriptions/units for a log entry made in the past where a device was
+setup differently):
+
+CREATE VIEW device_log_full AS
+SELECT L.id, L.stamp, L.value, H.description, H.unit
+  FROM device_log L
+  LEFT JOIN device_history H
+    ON (L.id = H.id
+    AND H.stamp = (SELECT MAX(H2.stamp)
+                     FROM device_history H2
+                    WHERE H2.id = L.id
+                      AND L.stamp >= H2.stamp
+                      AND H2.active = TRUE));
+ 
+
+Here is some random sample data that might be useful for testing:
+
+INSERT INTO device_history VALUES (1, "2014-12-01 10:00:00", TRUE, "First sensor online", "mm", 10);
+INSERT INTO device_history VALUES (1, "2014-12-01 12:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (1, "2014-12-01 12:15:00", TRUE, "First sensor (humidity), now with description", "%rel", 10);
+INSERT INTO device_history VALUES (1, "2014-12-06 18:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (1, "2014-12-06 19:00:00", TRUE, "Humidity room 3", "%rel", 60);
+
+INSERT INTO device_history VALUES (2, "2014-12-01 10:00:00", TRUE, "Second sensor", "xx", 100);
+INSERT INTO device_history VALUES (2, "2014-12-01 10:00:01", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (2, "2014-12-01 12:15:00", TRUE, "Second sensor", "xx", 100);
+INSERT INTO device_history VALUES (2, "2014-12-01 18:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (2, "2014-12-01 19:15:00", TRUE, "Second sensor", "xx", 100);
+INSERT INTO device_history VALUES (2, "2014-12-05 18:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (2, "2014-12-05 18:01:00", TRUE, "Second sensor", "xx", 100);
+
+INSERT INTO device_history VALUES (4, "2014-12-06 10:00:00", TRUE, "Door bell", "?", 1);
+INSERT INTO device_history VALUES (4, "2014-12-06 12:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (4, "2014-12-06 12:05:00", TRUE, "Door bell", "RIIINNNG?", 1);
+
+
+INSERT INTO device_history VALUES (7, "2014-12-02 13:00:00", TRUE, "Dummy sensor", "none", 123);
+INSERT INTO device_history VALUES (7, "2014-12-02 13:10:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (7, "2014-12-03 14:00:00", TRUE, "Dummy sensor", "none", 123);
+INSERT INTO device_history VALUES (7, "2014-12-03 15:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (7, "2014-12-03 16:00:00", TRUE, "Dummy sensor", "none", 123);
+INSERT INTO device_history VALUES (7, "2014-12-03 17:00:00", FALSE, NULL, NULL, NULL);
+INSERT INTO device_history VALUES (7, "2014-12-04 18:00:00", TRUE, "Dummy sensor", "none", 123);
+INSERT INTO device_history VALUES (7, "2014-12-04 19:00:00", FALSE, NULL, NULL, NULL);
+
+
+INSERT INTO device_log VALUES (1, "2014-12-01 10:00:10", 10.1);
+INSERT INTO device_log VALUES (1, "2014-12-01 10:00:20", 10.2);
+INSERT INTO device_log VALUES (1, "2014-12-01 10:00:30", 10.3);
+INSERT INTO device_log VALUES (1, "2014-12-01 13:00:00", 33.7);
+INSERT INTO device_log VALUES (1, "2014-12-01 13:00:10", 33.7);
+INSERT INTO device_log VALUES (1, "2014-12-06 19:01:00", -11.4);
+INSERT INTO device_log VALUES (1, "2014-12-06 19:02:00", -12.4);
+INSERT INTO device_log VALUES (1, "2014-12-06 19:03:00", -13.1);
+
+INSERT INTO device_log VALUES (2, "2014-12-01 10:00:00", 22.0);
+INSERT INTO device_log VALUES (2, "2014-12-01 10:00:01", 22.1);
+INSERT INTO device_log VALUES (2, "2014-12-01 10:00:02", 22.2);
+INSERT INTO device_log VALUES (2, "2014-12-06 10:00:00", 222.3);
+INSERT INTO device_log VALUES (2, "2014-12-07 10:00:00", 222.4);
+
+INSERT INTO device_log VALUES (4, "2014-12-06 11:15:00", 1.0);
+INSERT INTO device_log VALUES (4, "2014-12-06 19:20:00", 1.0);
+
+INSERT INTO device_log VALUES (7, "2014-12-02 13:05:00", 77.0);
+INSERT INTO device_log VALUES (7, "2014-12-03 23:05:00", 77.1);
+INSERT INTO device_log VALUES (7, "2014-12-03 23:55:00", 77.2);
+INSERT INTO device_log VALUES (7, "2014-12-04 20:05:00", 77.5);
+
+
+So the idea is:
+
+When the client sees a device becoming active or inactive, check its row in
+device_status. If the new status is different, insert a new row in
+device_history.
+
+When the client sees a POLL request, just insert a new row in device_log.
+
+
+A couple simple web pages:
+
+One is just a table of the output from SELECT * FROM device_last_active_status
+
+And each row in this table could then have a link to another page, which has
+the results from these two SELECTs (heading and table):
+
+  SELECT * FROM device_last_active_status WHERE id = <device>;
+  SELECT * FROM device_log WHERE id = <device> ORDER BY stamp DESC LIMIT 100
+
+Even better would be to have a graph, of course...
