@@ -67,6 +67,27 @@
 */
 #define MAX_FAIL_RESPOND 10
 
+
+/*
+  Baudrate to use on the bus.
+
+  The Atmega328 and similar UARTs used on the Arduinos is quite limited in
+  their choice of serial line speed, it can only be CPU_FREQUENCY/(16*N) for
+  integer N (or CPU_FREQUENCY/(8*N) in high-speed mode).
+
+  These possible speeds do not match very well to the standard speeds
+  available eg. to Linux stty, there are some few percentage errors.
+
+  We want to run at 115200. But the closest speed the Arduino can do is
+  16e6 / (8*17) = 117647 bits per second.
+
+  So we run the master device at that same slightly-off bit rate. Then we can
+  still debug using a standard speed of 115200 (with a slight error), and we
+  get exact speed on the important intra-bus communications.
+*/
+#define RS485_BAUD (16000000/(8*17))
+
+
 struct devdata {
   /* Time of last poll, or 0 if never polled yet. */
   uint64_t last_poll_time;
@@ -726,7 +747,7 @@ int main()
   ROM_GPIOPinConfigure(GPIO_PB0_U1RX);
   ROM_GPIOPinConfigure(GPIO_PB1_U1TX);
   ROM_GPIOPinTypeUART(GPIO_PORTB_BASE, GPIO_PIN_0 | GPIO_PIN_1);
-  ROM_UARTConfigSetExpClk(UART1_BASE, (ROM_SysCtlClockGet()), 2400,
+  ROM_UARTConfigSetExpClk(UART1_BASE, (ROM_SysCtlClockGet()), RS485_BAUD,
                           (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE |
                            UART_CONFIG_PAR_NONE));
   ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOD);
