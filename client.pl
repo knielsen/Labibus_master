@@ -4,12 +4,20 @@ use strict;
 use warnings;
 
 use DBI;
+use Time::HiRes;
+
 
 my @devices_active;
 
 
 my $dbh = DBI->connect("DBI:Pg:dbname=powermeter", "powermeter", undef,
                        {RaiseError=>1, AutoCommit=>1});
+
+sub getstamp {
+  my $sec_float = Time::HiRes::time();
+  return int(0.5 + $sec_float*1000);
+}
+
 
 sub unquote {
   my ($x) = @_;
@@ -32,8 +40,8 @@ SQL
       $res->[0][1] ne $description ||
       $res->[0][2] ne $unit ||
       $res->[0][3] != $poll_interval) {
-    $dbh->do(<<SQL, undef, $dev, $description, $unit, $poll_interval);
-INSERT INTO device_history VALUES (?, NOW(), TRUE, ?, ?, ?)
+    $dbh->do(<<SQL, undef, $dev, getstamp(), $description, $unit, $poll_interval);
+INSERT INTO device_history VALUES (?, ?, TRUE, ?, ?, ?)
 SQL
   }
 }
@@ -49,8 +57,8 @@ SELECT active, description, unit, poll_interval
 SQL
   # Insert an inactive row only if the device is currently listed active.
   if (scalar(@$res) && $res->[0][0]) {
-    $dbh->do(<<SQL, undef, $dev);
-INSERT INTO device_history VALUES (?, NOW(), FALSE, NULL, NULL, NULL)
+    $dbh->do(<<SQL, undef, $dev, getstamp());
+INSERT INTO device_history VALUES (?, ?, FALSE, NULL, NULL, NULL)
 SQL
   }
 }
@@ -59,8 +67,8 @@ SQL
 sub
 device_value {
   my ($dev, $val) = @_;
-  $dbh->do(<<SQL, undef, $dev, $val);
-INSERT INTO device_log VALUES (?, NOW(), ?)
+  $dbh->do(<<SQL, undef, $dev, getstamp(), $val);
+INSERT INTO device_log VALUES (?, , ?)
 SQL
 }
 

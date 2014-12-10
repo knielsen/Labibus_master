@@ -5,7 +5,7 @@ their description etc.
 
 CREATE TABLE device_history (
   id INTEGER NOT NULL,
-  stamp TIMESTAMP NOT NULL,
+  stamp BIGINT NOT NULL,
   active BOOLEAN NOT NULL,
   description VARCHAR(140),
   unit VARCHAR(20),
@@ -51,7 +51,7 @@ This is the main table that contains all logged data:
 
 CREATE TABLE device_log (
   id INTEGER NOT NULL,
-  stamp TIMESTAMP NOT NULL,
+  stamp BIGINT NOT NULL,
   value FLOAT(24) NOT NULL,
   PRIMARY KEY (id, stamp));
 
