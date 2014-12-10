@@ -32,7 +32,7 @@ description and so on for devices that were active previously, but are
 currently (perhaps temporarily) inactive.
 
 CREATE VIEW device_last_active_status AS
-SELECT max_active_id, active_history.stamp, newest_history.active, active_history.description, active_history.unit, active_history.poll_interval
+SELECT max_active_id AS id, active_history.stamp, newest_history.active, active_history.description, active_history.unit, active_history.poll_interval
   FROM (SELECT id AS max_active_id, MAX(stamp) AS max_active_stamp
           FROM device_history AS dh1
          WHERE active = TRUE
