@@ -68,12 +68,12 @@ sub
 device_value {
   my ($dev, $val) = @_;
   $dbh->do(<<SQL, undef, $dev, getstamp(), $val);
-INSERT INTO device_log VALUES (?, , ?)
+INSERT INTO device_log VALUES (?, ?, ?)
 SQL
 }
 
 
-open M, '+<', '/dev/ttyACM0'
+open M, '+<', '/dev/serial/labibus'
     or die "Failed to open master device: $!\n";
 
 # Sending stuff to the master forces a full status report.
