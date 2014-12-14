@@ -604,9 +604,9 @@ do_poll(uint32_t dev)
   uint32_t rcv_len;
   char *p, *q, *val_start, *crc_start;
   uint32_t calc_crc, rcv_crc;
+  uint64_t start_time;
 
-  devices[dev].last_poll_time = current_time();
-
+  start_time = current_time();
   sprintf(buf, "?%02x:P|", (unsigned)(dev & 0x7f));
 
   led_on();
@@ -655,13 +655,22 @@ do_poll(uint32_t dev)
   if (q != p)
     goto badresponse;
 
-  /* Ok, device responded to discover request. */
+  /* Ok, device responded to poll request. */
   devices[dev].active_count = MAX_FAIL_RESPOND;
   device_poll_result(dev, val_start);
+  devices[dev].last_poll_time = start_time;
 
   return;
 
 badresponse:
+  /*
+    Do not reset the poll time the first few times that the device fails
+    to respond to poll; this way we will re-poll the device immediately
+    a couple of times before falling back to periodic poll (and eventually
+    to giving up and declaring the device inactive).
+  */
+  if (devices[dev].active_count <= MAX_FAIL_RESPOND/2)
+    devices[dev].last_poll_time = start_time;
   device_not_responding(dev, 0);
 }
 
