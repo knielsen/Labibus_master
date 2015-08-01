@@ -49,7 +49,7 @@ clean:
 	rm -f $(OBJS) $(TARGET).elf $(TARGET).bin $(STARTUP).o
 
 tty:
-	stty -F/dev/serial/labibus raw -echo -hup cs8 -parenb -cstopb 500000
+	stty -F/dev/serial/labibus raw -echo -hup cs8 -parenb -cstopb 115200
 
 cat:
 	cat /dev/serial/labibus
